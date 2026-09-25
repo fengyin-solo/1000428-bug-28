@@ -6,28 +6,53 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.blower import BlowerService
+from app.services.blower import (
+    LIST_FIELDS,
+    STATUS_ORDER,
+    BlowerService,
+)
 
 router = APIRouter(prefix="/api/blower", tags=["鼓风机组"])
 
 service = BlowerService()
 
-LIST_FIELDS = ["机组编号", "机组型号", "额定风量", "出口压力", "运行时长", "维护周期", "所属单元", "机组状态"]
-STATUSES = ["待启用", "运行中", "维护中", "已停用"]
+STATUSES = STATUS_ORDER
 
 
 @router.get("", response_model=PageResult[dict])
 def list_entries(
     keyword: str | None = Query(default=None, description="按机组编号检索"),
     status: str | None = Query(default=None, description="待启用、运行中、维护中、已停用"),
+    机组编号: str | None = Query(default=None, description="按机组编号模糊检索"),
+    机组型号: str | None = Query(default=None, description="按机组型号模糊检索"),
+    额定风量: str | None = Query(default=None, description="按额定风量模糊检索"),
     page: int = 1,
     size: int = 20,
 ) -> PageResult[dict]:
-    """按机组编号与状态过滤鼓风机组列表；没有数据时返回空页，不报错。"""
+    """按机组编号、型号、额定风量与状态过滤鼓风机组列表；没有数据时返回空页，不报错。"""
     if size > 200:
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
-    items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
+    if status and status not in STATUSES:
+        raise HTTPException(status_code=400, detail=f"机组状态只支持：{'、'.join(STATUSES)}")
+    filters = {
+        "机组编号": 机组编号 or "",
+        "机组型号": 机组型号 or "",
+        "额定风量": 额定风量 or "",
+    }
+    items, total = service.list_entries(
+        keyword=keyword,
+        status=status,
+        filters=filters,
+        page=page,
+        size=size,
+    )
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/stats")
+def stats() -> dict[str, Any]:
+    """统计卡片：运行机组、维护中机组数量与今日供风量，口径与列表状态筛选一致。"""
+    return service.stats()
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -41,10 +66,10 @@ def get_entry(entry_id: int) -> dict:
 
 @router.post("", response_model=ActionResult)
 def create_entry(payload: EntryPayload) -> ActionResult:
-    """登记一条鼓风机组，缺字段时说明原因而不是静默丢弃。"""
-    entry, missing = service.create_entry(payload.values)
-    if missing:
-        return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
+    """登记一条鼓风机组，缺字段或机组编号重复时说明原因而不是静默丢弃。"""
+    entry, message = service.create_entry(payload.values)
+    if entry is None:
+        return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message="鼓风机组已登记", entry=entry)
 
 
